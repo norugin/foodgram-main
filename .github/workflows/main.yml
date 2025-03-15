@@ -2,7 +2,7 @@ name: Foodgram
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
 
 jobs:
   tests:
