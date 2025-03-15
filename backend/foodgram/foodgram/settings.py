@@ -154,3 +154,5 @@ REST_FRAMEWORK = {
 }
 
 PREFIX_SHORT_LINK_RECIPE = 's/'
+
+SITE_URL = 'https://foodgram.example.org'

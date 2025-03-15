@@ -3,11 +3,12 @@ from rest_framework import viewsets, status, mixins
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated, SAFE_METHODS
 from rest_framework.decorators import action
+from django.conf import settings
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from djoser.serializers import SetPasswordSerializer
 
-from recipes.models import Recipe, Tag, Ingredient, Favorite, ShoppingCart
+from recipes.models import Recipe, Tag, Ingredient
 from api.serializers import (RecipeSerializer, TagSerializer,
                              IngredientSerializer, RecipeCreateSerializer,
                              UserSerializer, SubscriptionSerializer,
@@ -18,7 +19,8 @@ from api.permissions import (IsOwnerOrAdminOrReadOnly,
                              IsCurrentUserOrAdminOrReadOnly)
 from api.filters import IngredientSearchFilter, RecipeFilter
 from api.pagination import ApiPagination
-from users.models import User, Subscription
+from api.constants import SHORT_ID_LENGTH
+from users.models import User
 
 
 class BaseReadOnlyViewSet(mixins.ListModelMixin,
@@ -61,18 +63,16 @@ class RecipeViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if request.method == 'POST':
-            if Favorite.objects.filter(user=user, recipe=recipe).exists():
+            if user.favorite_recipes.filter(recipe=recipe).exists():
                 return Response({'errors': 'Рецепт уже добавлен!'},
                                 status=status.HTTP_400_BAD_REQUEST)
             serializer = FavoriteSerializer(data=request.data)
-            if serializer.is_valid(raise_exception=True):
-                serializer.save(user=user, recipe=recipe)
-                return Response(serializer.data,
-                                status=status.HTTP_201_CREATED)
-            return Response(serializer.errors,
-                            status=status.HTTP_400_BAD_REQUEST)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=user, recipe=recipe)
+            return Response(serializer.data,
+                            status=status.HTTP_201_CREATED)
 
-        favorite_item = Favorite.objects.filter(user=user, recipe=recipe)
+        favorite_item = user.favorite_recipes.filter(recipe=recipe)
         if favorite_item.exists():
             favorite_item.delete()
             return Response('Рецепт успешно удалён из избранного.',
@@ -89,19 +89,16 @@ class RecipeViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if request.method == 'POST':
-            if ShoppingCart.objects.filter(user=user, recipe=recipe).exists():
+            if user.shopping_cart.filter(recipe=recipe).exists():
                 return Response({'errors': 'Рецепт уже добавлен!'},
                                 status=status.HTTP_400_BAD_REQUEST)
             serializer = ShoppingCartSerializer(data=request.data)
-            if serializer.is_valid(raise_exception=True):
-                serializer.save(user=user, recipe=recipe)
-                return Response(serializer.data,
-                                status=status.HTTP_201_CREATED)
-            return Response(serializer.errors,
-                            status=status.HTTP_400_BAD_REQUEST)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=user, recipe=recipe)
+            return Response(serializer.data,
+                            status=status.HTTP_201_CREATED)
 
-        shopping_cart_item = ShoppingCart.objects.filter(user=user,
-                                                         recipe=recipe)
+        shopping_cart_item = user.shopping_cart.filter(recipe=recipe)
         if shopping_cart_item.exists():
             shopping_cart_item.delete()
             return Response('Рецепт успешно удалён из списка покупок.',
@@ -114,20 +111,20 @@ class RecipeViewSet(viewsets.ModelViewSet):
             methods=['get'],
             permission_classes=[IsAuthenticated])
     def download_shopping_cart(self, request):
-        author = User.objects.get(id=self.request.user.pk)
-        if author.shopping_cart.exists():
-            return shopping_cart(self, request, author)
+        user = self.request.user
+        if user.shopping_cart.exists():
+            return shopping_cart(self, request, user)
 
     @action(detail=True, methods=['get'], url_path='get-link')
     def get_link(self, request, pk=None):
         recipe = get_object_or_404(Recipe, id=pk)
 
         if not recipe.short_id:
-            recipe.short_id = shortuuid.uuid()[:6]
+            recipe.short_id = shortuuid.uuid()[:SHORT_ID_LENGTH]
             recipe.save(update_fields=['short_id'])
 
-        short_link = f"https://foodgram.example.org/s/{recipe.short_id}"
-        return Response({"short-link": short_link}, status=status.HTTP_200_OK)
+        short_link = f'{settings.SITE_URL}/s/{recipe.short_id}'
+        return Response({'short-link': short_link}, status=status.HTTP_200_OK)
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -151,20 +148,21 @@ class UserViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if request.method == 'POST':
+            if user.follower.filter(author=author).exists():
+                return Response({'errors': 'Вы уже подписаны'
+                                           ' на этого пользователя'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
             serializer = SubscriptionSerializer(
                 data=request.data,
                 context={'request': request, 'author': author}
             )
-            if serializer.is_valid(raise_exception=True):
-                serializer.save(author=author, subscriber=user)
-                return Response(serializer.data,
-                                status=status.HTTP_201_CREATED)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(author=author, subscriber=user)
+            return Response(serializer.data,
+                            status=status.HTTP_201_CREATED)
 
-            return Response({'errors': 'Объект не найден'},
-                            status=status.HTTP_404_NOT_FOUND)
-
-        subscription = Subscription.objects.filter(author=author,
-                                                   subscriber=user)
+        subscription = user.follower.filter(author=author)
         if subscription.exists():
             subscription.delete()
             return Response({'message': 'Успешная отписка'},
@@ -178,18 +176,16 @@ class UserViewSet(viewsets.ModelViewSet):
     def set_password(self, request, *args, **kwargs):
         serializer = SetPasswordSerializer(data=request.data,
                                            context={'request': request})
-        if serializer.is_valid():
-            self.request.user.set_password(serializer.data['new_password'])
-            self.request.user.save()
-            return Response('Пароль успешно изменен',
-                            status=status.HTTP_204_NO_CONTENT)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        self.request.user.set_password(serializer.data['new_password'])
+        self.request.user.save()
+        return Response('Пароль успешно изменен',
+                        status=status.HTTP_204_NO_CONTENT)
 
     @action(methods=['get'], permission_classes=[IsAuthenticated],
             detail=False)
     def subscriptions(self, request):
-        subscriptions = (Subscription.
-                         objects.filter(subscriber=self.request.user))
+        subscriptions = self.request.user.follower.all()
         pages = self.paginate_queryset(subscriptions)
         serializer = SubscriptionSerializer(pages, many=True,
                                             context={'request': request})
@@ -208,7 +204,6 @@ class UserViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
         serializer = UserAvatarSerializer(user, data=request.data,
                                           partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
